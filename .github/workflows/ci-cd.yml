@@ -2,9 +2,9 @@ name: CI/CD Pipeline - YelpCamp
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-scan-push-deploy:
@@ -14,32 +14,30 @@ jobs:
       DOCKER_IMAGE: joshi2106/testcamp:latest
 
     steps:
-
-      # ── 1. Git Checkout ───────────────────────────────────────────────
+      # 1. Checkout Code
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ── 2. SonarQube Analysis ─────────────────────────────────────────
+      # 2. SonarQube Analysis
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}   # e.g. http://your-sonar-server:9000
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
             -Dsonar.projectKey=CampProject
             -Dsonar.projectName=CampProject
 
-      # ── 3. SonarQube Quality Gate ─────────────────────────────────────
+      # 3. SonarQube Quality Gate
       - name: SonarQube Quality Gate Check
         uses: SonarSource/sonarqube-quality-gate-action@master
-        # continue-on-error: true   ← uncomment to mimic abortPipeline: false
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      # ── 4. Docker Build & Tag ─────────────────────────────────────────
+      # 4. Docker Build & Push Preparation
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -49,17 +47,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker Build & Tag
+      - name: Docker Build
         run: docker build -t ${{ env.DOCKER_IMAGE }} .
 
-      # ── 5. Trivy Image Scan ───────────────────────────────────────────
+      # 5. Trivy Image Scan
       - name: Trivy Image Scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}
           format: table
-          output: image-report.html
-          exit-code: 0          # mirrors Jenkinsfile (doesn't fail pipeline)
+          output: trivy-report.txt
+          exit-code: "0"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
 
@@ -67,64 +65,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-report
-          path: image-report.html
+          path: trivy-report.txt
 
-      # ── 6. Docker Push ────────────────────────────────────────────────
+      # 6. Push Docker Image
       - name: Docker Push Image
         run: docker push ${{ env.DOCKER_IMAGE }}
 
-      # ── 7. Deploy Container Locally on Runner ─────────────────────────
-      #    NOTE: This runs on the GitHub-hosted runner (ephemeral).
-      #    For a persistent server, use a self-hosted runner or SSH deploy (see below).
-      - name: Docker Deploy
-        run: |
-          docker run -d -p 3004:3000 \
-            --name testcamp \
-            -e CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }} \
-            -e CLOUDINARY_KEY=${{ secrets.CLOUDINARY_KEY }} \
-            -e CLOUDINARY_SECRET=${{ secrets.CLOUDINARY_SECRET }} \
-            -e MAPBOX_TOKEN=${{ secrets.MAPBOX_TOKEN }} \
-            -e DB_URL=${{ secrets.DB_URL }} \
-            ${{ env.DOCKER_IMAGE }}
+      # 7. Deploy to EC2 via SSH
+      - name: Deploy to Remote Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            docker pull joshi2106/testcamp:latest
 
-      # ── OPTIONAL: Deploy to a remote server via SSH ───────────────────
-      # Uncomment this block and remove the step above if you want to
-      # deploy to your actual AWS EC2 / remote server instead.
-      #
-      # - name: Deploy to Remote Server via SSH
-      #   uses: appleboy/ssh-action@v1.0.3
-      #   with:
-      #     host: ${{ secrets.SERVER_HOST }}        # EC2 public IP or domain
-      #     username: ${{ secrets.SERVER_USER }}    # e.g. ubuntu / ec2-user
-      #     key: ${{ secrets.SERVER_SSH_KEY }}      # private key content
-      #     script: |
-      #       docker pull shaikmustafa/testcamp:latest
-      #       docker stop testcamp || true
-      #       docker rm testcamp   || true
-      #       docker run -d -p 3004:3000 \
-      #         --name testcamp \
-      #         -e CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }} \
-      #         -e CLOUDINARY_KEY=${{ secrets.CLOUDINARY_KEY }} \
-      #         -e CLOUDINARY_SECRET=${{ secrets.CLOUDINARY_SECRET }} \
-      #         -e MAPBOX_TOKEN=${{ secrets.MAPBOX_TOKEN }} \
-      #         -e DB_URL=${{ secrets.DB_URL }} \
-      #         shaikmustafa/testcamp:latest
+            docker stop testcamp || true
+            docker rm testcamp || true
 
-      # ── 8. Email Notification ─────────────────────────────────────────
+            docker run -d -p 3000:3000 \
+              --name testcamp \
+              -e CLOUDINARY_CLOUD_NAME=${{ secrets.CLOUDINARY_CLOUD_NAME }} \
+              -e CLOUDINARY_KEY=${{ secrets.CLOUDINARY_KEY }} \
+              -e CLOUDINARY_SECRET=${{ secrets.CLOUDINARY_SECRET }} \
+              -e MAPBOX_TOKEN=${{ secrets.MAPBOX_TOKEN }} \
+              -e DB_URL=${{ secrets.DB_URL }} \
+              joshi2106/testcamp:latest
+
+      # 8. Email Notification
       - name: Send Email Notification
-        if: always()    # mirrors post { always { ... } } in Jenkinsfile
+        if: always()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 465
+          secure: true
           username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}   # Gmail App Password
-          to: awsanddevops18@gmail.com
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: syamjoshikalaga@gmail.com
           from: ${{ secrets.MAIL_USERNAME }}
           subject: "${{ job.status }}: ${{ github.workflow }} #${{ github.run_number }}"
           body: |
-            *${{ job.status }}:* Job ${{ github.workflow }}
-            Build: ${{ github.run_number }}
-            Triggered by: ${{ github.actor }}
+            Status: ${{ job.status }}
+
+            Workflow: ${{ github.workflow }}
+            Build Number: ${{ github.run_number }}
+            Triggered By: ${{ github.actor }}
             Branch: ${{ github.ref_name }}
-            More info at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Details:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
