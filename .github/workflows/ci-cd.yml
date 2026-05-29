@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      DOCKER_IMAGE: shaikmustafa/testcamp:latest
+      DOCKER_IMAGE: joshi2106/testcamp:latest
 
     steps:
 
